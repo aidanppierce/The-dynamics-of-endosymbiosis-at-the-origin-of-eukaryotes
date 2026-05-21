@@ -1,0 +1,298 @@
+import numpy as np
+import random
+import pandas as pd
+import os
+from pathlib import Path
+
+
+#Mutation can be left stochastic
+#Trasnfer numbers are deterministic, transfer locations is stochastic
+#deletion and all other processes are deterministic
+
+
+def mutate(matrix, u):
+    
+    #Determine the number of gened mutated 
+    mutated_host_genes = np.random.poisson(matrix[:,0] * u,(Nh))
+    mutated_host_genes = np.where(mutated_host_genes>matrix[:,0],matrix[:,0],mutated_host_genes)
+    
+    mutated_endo_genes = np.random.poisson(matrix[:,2] * u,(Nh))
+    mutated_endo_genes = np.where(mutated_endo_genes>matrix[:,2],matrix[:,2],mutated_endo_genes)
+
+    #Make changes to the matrix
+    matrix[:,0] -= mutated_host_genes
+    matrix[:,1] += mutated_host_genes
+    matrix[:,2] -= mutated_endo_genes
+    matrix[:,3] += mutated_endo_genes
+        
+    return matrix
+
+def delete(matrix,d):
+    
+    #Determine the number of gened mutated 
+    deleted_host_wt_genes = np.random.poisson(matrix[:,0] * d,(Nh))
+    deleted_host_wt_genes = np.where(deleted_host_wt_genes>matrix[:,0],matrix[:,0],deleted_host_wt_genes)
+    deleted_host_u_genes = np.random.poisson(matrix[:,1] * d,(Nh))
+    deleted_host_u_genes = np.where(deleted_host_u_genes>matrix[:,1],matrix[:,1],deleted_host_u_genes)
+    
+    deleted_endo_wt_genes = np.random.poisson(matrix[:,2] * d,(Nh))
+    deleted_endo_wt_genes = np.where(deleted_endo_wt_genes>matrix[:,2],matrix[:,2],deleted_endo_wt_genes)
+    deleted_endo_u_genes = np.random.poisson(matrix[:,3] * d,(Nh))
+    deleted_endo_u_genes = np.where(deleted_endo_u_genes>matrix[:,3],matrix[:,3],deleted_endo_u_genes)
+
+    #Make changes to the matrix
+    matrix[:,0] -= deleted_host_wt_genes
+    matrix[:,1] -= deleted_host_u_genes
+    matrix[:,2] -= deleted_endo_wt_genes
+    matrix[:,3] -= deleted_endo_u_genes
+        
+    return matrix
+
+#transfer
+
+#transfer from external pool to a genome lamdaX-->H, lamdaX-->E
+
+
+def transfer_from_I(int_eDNA,matrix,t):
+    
+    transfer_events = np.random.poisson(t,(matrix.shape[0]))
+
+    #the location of the genomes recieving a transfer
+    
+    for i in np.where(transfer_events>0)[0]:
+        if np.sum(int_eDNA[i,:]) == 0:
+            continue
+        prob = int_eDNA[i,:]/np.sum(int_eDNA[i,:],axis = 0)
+
+        idx = np.random.choice(range(0,4), size=transfer_events[i], replace=True, p = prob) #idx is the donor gene from the external pool
+
+        int_eDNA[i,idx] -= 1
+        matrix[i,idx] +=1
+    return matrix
+
+
+#we look inside a cell, loop through all hosts
+
+#transfer
+
+#transfer from external pool to a genome lamdaX-->H, lamdaX-->E
+
+def transfer_from_X(ext_eDNA,matrix,t):
+    
+    """for each genome determine how many genes go from external to genome"""
+    
+    transfer_events = np.random.poisson(t,(matrix.shape[0]))
+    
+    #the location of the genomes recieving a transfer
+    #what gene from the external dna pool is being sent
+
+    for i in np.where(transfer_events>0)[0]:
+        #i is the genome recieving a transfer
+        if np.sum(ext_eDNA) == 0:
+            continue
+
+        prob = ext_eDNA/np.sum(ext_eDNA) #the probability of picking up a certian gene from the external eDNA pool
+
+        idx = np.random.choice(range(0,4), size=transfer_events[i], replace=True, p = prob) #idx is the donor gene from the external pool
+
+        ext_eDNA[idx] -= 1
+        matrix[i,idx] += 1 #add the gene to the matrix
+
+    return matrix
+
+
+def selection(hosts,endos,s,Kg, obligate = False):
+    
+    g_endos = endos.sum(axis=1)
+    nwt_endos =hosts[:,2]+endos[:,2]
+    
+    g_hosts = hosts.sum(axis=1)
+    nwt_hosts = hosts[:,0]+endos[:,0]
+
+    g_tot = g_hosts+g_endos
+    #nwt_tot = nwt_hosts+nwt_endos
+
+    Wi = np.array([])
+    for g,hwt,ewt in zip(g_tot,nwt_hosts,nwt_endos):
+        if g == 0:
+            Wi = np.append(Wi,0)
+        else:
+            Wi = np.append(Wi, 1+ (hwt/hw)**s + ((ewt/ew)**s)  -(Kg*g)) #
+    
+    #if obligate == True:
+        #get mean of endosymbionts in each host, if mean == 0 then that host fitness is 0
+        #for i in range(0,Nh):
+            #if np.mean(endos[i,:,:])==0:
+            #    wi_relative[i] = 0
+
+    for i in range(0,Nh):
+        if obligate == True:
+            if hosts[i,2]+endos[i,2]==0:
+                Wi[i] = 0
+
+        if hosts[i,0]+endos[i,0]==0:
+            Wi[i] = 0
+
+    alive = np.where(Wi >0)[0] #identifies cells with a number greater than 0 or np.nan
+    
+    wi_relative = Wi[alive]/np.mean(Wi[alive]) #gives relative fitness
+    
+    tot_wi = np.sum(wi_relative)
+
+    if tot_wi == 0:
+        idx = np.random.choice(np.arange(0,Nh), size=(len(alive)), replace=True, p= [1/Nh]*Nh)
+    else:
+        idx = np.random.choice(alive, size=(Nh), replace=True, p= wi_relative/tot_wi)
+
+
+    return idx
+
+
+
+#########################################################################################################################################################################################
+#########################################################################################################################################################################################
+#parameter list
+
+Nh = 1000
+Ne = 1
+
+HG0_list = [100]
+EG0_list = [100]
+
+s_list = [0.6]
+Kg_list = [0.005,0.0025,0.0005]
+
+ue_list = [0.0001]#[0.0005]
+uh_list = [0.0001]
+de_list = [0.0005]
+dh_list = [0.0005]
+tXe_list = [0.05]
+tXh_list = [0.05]
+tIe_list = [0.05]
+tIh_list = [0.05]
+hw_list = [100]
+ew_list = [100]
+Le_list = [1]
+Lh_list = [1]
+
+generations = 20000
+
+#determine how many terminals you want to run this over for parallel running of code
+terminal_number = input('what terminal number is this?')
+repeats = np.arange(5*(int(terminal_number)-1),5*int(terminal_number))
+
+#identify the directory
+path = Path(f'/Users/macbook/Desktop/GT_model_v1')
+if path.is_dir():
+    print('nice')
+else:
+    os.mkdir(f'/Users/macbook/Desktop/GT_model_v1')
+path = f'/Users/macbook/Desktop/GT_model_v1'
+os.chdir(path)
+#run the rimulations inot the specified directory
+for s in s_list:
+    for Kg in Kg_list:
+        for EG0,HG0 in zip(EG0_list,HG0_list):
+            for de,dh in zip(de_list,dh_list):
+                for Le,Lh in zip(Le_list,Lh_list):
+                    for ue,uh in zip(ue_list,uh_list):
+                        for tXh,tXe,tIh,tIe in zip(tXh_list,tXe_list,tIh_list,tIe_list):
+                            for hw,ew in zip(hw_list,ew_list):
+                                print(f'Current parameters:\n EG0:{EG0}, HG0:{HG0},ue:{ue},uh:{uh},tXe:{tXe},tXh:{tXh},tIe:{tIe},tIh:{tIh},de:{de},dh:{dh}, s:{s}, Kg:{Kg}')
+                                for repeat in repeats:
+                                    print(f'repeat: {repeat}')
+                                    
+                                    hosts = np.zeros((Nh,4))
+                                    hosts[:,0] = HG0
+
+                                    endos = np.zeros((Nh,4))
+                                    old_endos = endos.copy()
+
+                                    ext_eDNA = np.zeros((4))
+                                    
+                                    for n in range(0,generations):
+                                        #print(n)
+                                        if n < 5000:
+                                            tXh_under5000 = tXh + tIh
+                                            Kg_without_endo = 0.005
+                                            hosts = mutate(hosts, uh)
+                                            hosts = delete(hosts, dh)
+                                            
+                                            hosts =  transfer_from_X(ext_eDNA,hosts,tXh_under5000) 
+
+                                            idx = selection(hosts,endos,s,Kg_without_endo, obligate = False)
+                                            
+                                            new_hosts = hosts[idx,:]
+                                            new_endos = endos[idx,:]
+
+                                            ext_eDNA[:] = np.sum(hosts,axis = 0)
+                                            
+                                            hosts = new_hosts
+                                            endos = new_endos
+                                            #print(f'{n}<5000')
+
+                                        if n == 5000:
+                                            #print(f'{n}==5000')
+                                            endos = np.zeros((Nh,4))
+                                            endos[:,2] = EG0
+
+                                            hosts = mutate(hosts, uh)
+                                            hosts = delete(hosts, dh)
+
+                                            endos = delete(endos, de)
+                                            endos = mutate(endos, ue)
+
+                                            hosts = transfer_from_X(ext_eDNA,hosts,tXh) 
+                                            hosts = transfer_from_I(old_endos,hosts,tIh)
+
+                                            endos = transfer_from_X(ext_eDNA,endos,tXe) 
+                                            endos = transfer_from_I(old_endos,endos,tIe)
+
+                                            idx = selection(hosts,endos,s,Kg, obligate = False)
+                                            
+                                            new_hosts = hosts[idx,:]
+                                            new_endos = endos[idx,:]
+                                            
+                                            ext_eDNA[:] = np.sum(hosts,axis = 0)
+                                            old_endos = endos.copy()
+                                            
+
+                                            hosts = new_hosts
+                                            endos = new_endos
+
+                                        elif n >= 5000:
+                                            #print(f"n = {n}, I don't know how we got here")
+                                            
+                                            hosts = mutate(hosts, uh)
+                                            hosts = delete(hosts, dh)
+
+                                            endos = mutate(endos, ue)
+                                            endos = delete(endos, de)
+
+                                            hosts = transfer_from_X(ext_eDNA,hosts,tXh) 
+                                            hosts = transfer_from_I(old_endos,hosts,tIh)
+
+                                            endos = transfer_from_X(ext_eDNA,endos,tXe) 
+                                            endos = transfer_from_I(old_endos,endos,tIe)
+
+                                            idx = selection(hosts,endos,s,Kg, obligate = False)
+                                            
+                                            new_hosts = hosts[idx,:]
+                                            new_endos = endos[idx,:]
+                                            
+                                            ext_eDNA[:] = np.sum(hosts,axis = 0)
+                                            
+                                            old_endos = endos.copy()
+                                            
+                                            hosts = new_hosts
+                                            endos = new_endos
+
+                                        if n%500 == 0:
+                                            print(n)
+                                            np.save(f'GT_model_v1_15_hosts_{n}_s{s}_Kg{Kg}_EG0{EG0}_HG0{HG0}_hw{hw}_ew{ew}_ue{ue}_uh{uh}_de{de}_dh{dh}_tXe{tXe}_tXh{tXh}_tIe{tIe}_tIh{tIh}_{repeat}', hosts)
+                                            np.save(f'GT_model_v1_15_endos_{n}_s{s}_Kg{Kg}_EG0{EG0}_HG0{HG0}_hw{hw}_ew{ew}_ue{ue}_uh{uh}_de{de}_dh{dh}_tXe{tXe}_tXh{tXh}_tIe{tIe}_tIh{tIh}_{repeat}', endos)
+                                            #np.save(f'GT_model_v1_14_ext_eDNA_{n}_s{s}_Kg{Kg}_EG0{EG0}_HG0{HG0}_ue{ue}_uh{uh}_de{de}_dh{dh}_tXe{tXe}_tXh{tXh}_tIe{tIe}_tIh{tIh}_{repeat}', ext_eDNA)
+                                            
+                                    np.save(f'GT_model_v1_15_hosts_20000_s{s}_Kg{Kg}_EG0{EG0}_HG0{HG0}_hw{hw}_ew{ew}_ue{ue}_uh{uh}_de{de}_dh{dh}_tXe{tXe}_tXh{tXh}_tIe{tIe}_tIh{tIh}_{repeat}', hosts)
+                                    np.save(f'GT_model_v1_15_endos_20000_s{s}_Kg{Kg}_EG0{EG0}_HG0{HG0}_hw{hw}_ew{ew}_ue{ue}_uh{uh}_de{de}_dh{dh}_tXe{tXe}_tXh{tXh}_tIe{tIe}_tIh{tIh}_{repeat}', endos)
+                                    #np.save(f'GT_model_v1_14_ext_eDNA_20000_s{s}_Kg{Kg}_EG0{EG0}_HG0{HG0}_ue{ue}_uh{uh}_de{de}_dh{dh}_tXe{tXe}_tXh{tXh}_tIe{tIe}_tIh{tIh}_{repeat}', ext_eDNA)
